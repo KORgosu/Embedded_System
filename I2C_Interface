@@ -55,7 +55,7 @@ void initMPU6050() {
 
 // 센서 읽기 함수
 void readHMC5883() {
-  uint8_t status;
+  uint8_t status = 0; // [개선1] 미초기화 버그 수정 → 명시적 0으로 초기화
   int16_t x, y, z;
 
   // Step 1: Status 레지스터(09H) 확인 → DRDY bit = 1이면 데이터 준비됨
@@ -150,17 +150,18 @@ void readMPU6050() {
 }
 
 
-// Task 1 : HMC5883 지자기 센서 (Mutex 관리)
+// 태스크 1 : HMC5883 지자기 센서 (Mutex 관리)
 void task_hmc5883(void *pvParameters) {
   Serial.println("HMC5883 task started");
 
   for (;;) {
-    if (xSemaphoreTake(i2cMutex, 0) == pdTRUE) {
+    // [개선2] portMAX_DELAY로 변경 → Mutex 획득까지 대기, 데이터 누락 방지
+    if (xSemaphoreTake(i2cMutex, portMAX_DELAY) == pdTRUE) {
       readHMC5883(); // HMC5883에서 X, Y, Z 읽기 및 Serial 출력
+      // [개선3] Serial 출력을 Mutex 안으로 이동 → 출력 섞임 방지
+      Serial.println("HMC5883 task loop");
       xSemaphoreGive(i2cMutex);
     }
-
-    Serial.println("HMC5883 task loop");
     vTaskDelay(100);
   }
 }
@@ -173,10 +174,10 @@ void task_mpu6050(void *pvParameters) {
   for (;;) {
     if (xSemaphoreTake(i2cMutex, portMAX_DELAY) == pdTRUE) {
       readMPU6050(); // MPU6050에서 가속도/자이로 읽기 및 Serial 출력
+      // [개선3] Serial 출력을 Mutex 안으로 이동 → 출력 섞임 방지
+      Serial.println("MPU6050 task loop");
       xSemaphoreGive(i2cMutex);
     }
-
-    Serial.println("MPU6050 task loop");
     vTaskDelay(100);
   }
 }
@@ -186,16 +187,17 @@ void setup() {
   Serial.begin(9600);
   Wire.begin();
 
+  // [개선4] Mutex 먼저 생성 후 센서 초기화 → 올바른 순서
+  i2cMutex = xSemaphoreCreateMutex();
+
   // 센서 초기화
   initHMC5883();
   initMPU6050();
 
-  // Mutex 생성
-  i2cMutex = xSemaphoreCreateMutex();
-
   if (i2cMutex != NULL) {
-    xTaskCreate(task_hmc5883, "HMC5883 Task", 128, NULL, 2, &handle_hmc5883_task);
-    xTaskCreate(task_mpu6050, "MPU6050 Task", 128, NULL, 2, &handle_mpu6050_task);
+    // [개선5] Stack Size 128 → 256으로 증가 → Stack overflow 방지
+    xTaskCreate(task_hmc5883, "HMC5883 Task", 256, NULL, 2, &handle_hmc5883_task);
+    xTaskCreate(task_mpu6050, "MPU6050 Task", 256, NULL, 2, &handle_mpu6050_task);
     vTaskStartScheduler();
   }
 
