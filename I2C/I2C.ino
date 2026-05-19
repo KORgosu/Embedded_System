@@ -160,7 +160,7 @@ void task_hmc5883(void *pvParameters) {
       readHMC5883(); // HMC5883에서 X, Y, Z 읽기 및 Serial 출력
       // [개선3] Serial 출력을 Mutex 안으로 이동 → 출력 섞임 방지
       Serial.println("HMC5883 task loop");
-      xSemaphoreGive(i2cMutex);
+      xSemaphoreGive(i2cMutex); // 자원 반납
     }
     vTaskDelay(100);
   }
@@ -176,7 +176,7 @@ void task_mpu6050(void *pvParameters) {
       readMPU6050(); // MPU6050에서 가속도/자이로 읽기 및 Serial 출력
       // [개선3] Serial 출력을 Mutex 안으로 이동 → 출력 섞임 방지
       Serial.println("MPU6050 task loop");
-      xSemaphoreGive(i2cMutex);
+      xSemaphoreGive(i2cMutex); // 자원 반납
     }
     vTaskDelay(100);
   }
