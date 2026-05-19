@@ -5,104 +5,6 @@ FreeRTOS 기반의 다중 센서 실시간 데이터 수집·저장 프로젝트
 
 ---
 
-## 트러블슈팅 이력
-
-### [v1.0] 센서 데이터 전부 0으로 저장되는 버그
-- **영향 범위**: `FileSystem/FileSystem.ino`
-- **증상**: SD card 파일 및 시리얼 출력에서 X/Y/Z 가속도·자이로·자기장 값이 모두 0
-- **상태**: 미해결 → 원인 분석 시작
-
----
-
-### [v1.1] FreeRTOS + Wire 인터럽트 충돌 원인 확인
-FreeRTOS 스케줄러 시작 후 Wire(I2C) 인터럽트가 정상 동작하지 않는 것이 원인으로 확인.
-`setup()`에서 `Wire.begin()` 및 센서 초기화는 정상이나, Task 내부에서 센서 읽기 시 0이 반환됨.
-
-- **영향 범위**: `FileSystem/FileSystem.ino`
-- **원인**: FreeRTOS 스케줄러가 TWI 인터럽트보다 높은 우선순위로 실행되어 Wire 통신 차단
-- **시도한 해결 방법**:
-  - `taskENTER_CRITICAL()` 적용 → Wire 인터럽트까지 차단되어 실패
-  - NVIC TWI 우선순위 0으로 설정 → 효과 없음
-  - `vTaskSuspendAll()` 적용 → 스케줄러만 정지, 인터럽트 허용 방식 시도했으나 실패
-  - `Wire.begin()`을 Task 내부로 이동 → 실패
-  - `task_sensor` 별도 분리 + Stack 1024 증가 → 실패
-- **상태**: 미해결
-
----
-
-### [v1.2] SD card CS 핀(D4)이 I2C 버스 간섭 유발 확인
-I2C 스캐너로 진단한 결과, SD card CS 핀을 D4로 설정 시 SD card 초기화 후 I2C 버스에서 센서가 전혀 인식되지 않는 현상 확인.
-
-- **영향 범위**: `FileSystem/FileSystem.ino`
-- **진단 과정**:
-  - SD 초기화 전 I2C 스캔: `0x2C`, `0x68` 정상 인식
-  - SD 초기화 후 I2C 스캔: 아무것도 인식 안 됨
-  - → `sd.begin(D4)`가 I2C 핀에 간섭
-- **원인**: Arduino Due에서 D4가 SPI 관련 핀과 내부 충돌 발생
-- **상태**: 원인 확인 완료, 해결 진행 중
-
----
-
-### [v1.3] CS 핀 D4 → D10 변경으로 해결 ✅
-SD card CS 핀을 D10으로 변경한 결과 SD card 초기화 후에도 I2C 버스가 정상 동작하며 센서 데이터가 올바르게 읽히는 것이 확인됨.
-
-- **영향 범위**: `FileSystem/FileSystem.ino`
-- **해결 방법**:
-  ```cpp
-  // 변경 전
-  #define SD_CS_PIN 4
-
-  // 변경 후
-  #define SD_CS_PIN 10  // SPI 전용 CS 핀, I2C 간섭 없음
-  ```
-- **검증**:
-  - SD 초기화 전 I2C 스캔: `0x2C`, `0x68` ✅
-  - SD 초기화 후 I2C 스캔: `0x2C`, `0x68` ✅
-  - `[HMC] X:-21376 Y:16639 Z:-12798` ✅
-  - `[MPU Acc] X:-112 Y:236 Z:-17168` ✅
-  - `[MPU Gyro] X:172 Y:354 Z:-138` ✅
-- **상태**: 해결 완료 ✅
-
----
-
-### [v2.0] 최종 동작 확인 ✅
-센서 데이터 정상 읽기 및 SD card 저장, UART 명령 출력까지 전체 기능이 정상 동작하는 것이 확인됨.
-
-**최종 하드웨어 구성:**
-```
-Arduino Due
-├── I2C 버스 (D20/D21)
-│   ├── HMC5883  (0x2C) → /HMC/data.txt
-│   └── MPU6050  (0x68) → /MPU/data.txt
-└── SPI 버스 (MOSI/MISO/SCK + CS=D10)
-    └── SD card
-```
-
-**FreeRTOS Task 구성:**
-```
-├── task_hmc5883 → i2cMutex → 5초 주기 읽기
-├── task_mpu6050 → i2cMutex → 5초 주기 읽기
-└── task_sd      → spiMutex → 10초 주기 저장
-                            → 'r' 명령: 파일 출력
-                            → 'c' 명령: 파일 초기화
-```
-
-**최종 출력 검증:**
-```
-SD task: saved                              ✅ 10초 주기 저장
-=== /HMC/data.txt ===
-X:-21376 Y:16639  Z:-12798                 ✅
-X:-20864 Y:26623  Z:-11262                 ✅
-=== /MPU/data.txt ===
-Acc X:-112  Y:236  Z:-17168  Gyro X:172  Y:354  Z:-138   ✅
-Acc X:-168  Y:324  Z:-17292  Gyro X:196  Y:365  Z:-120   ✅
-=== 출력 완료 ===                           ✅
-```
-
-- **상태**: 완료 ✅
-
----
-
 ## 프로젝트 구조
 
 ```
@@ -159,9 +61,95 @@ SdFat 라이브러리를 사용해 SD카드에 디렉토리를 생성하고 센�
 
 | 항목 | 내용 |
 |------|------|
-| 하드웨어 | SD카드 (SPI, CS Pin 4) |
+| 하드웨어 | SD카드 (SPI, CS Pin 10) |
 | 동작 | `/HMC`, `/MPU` 디렉토리 생성 → 파일 쓰기 → 읽기 후 시리얼 출력 |
 | 의존 라이브러리 | `SPI.h`, `SdFat.h` |
+
+#### 트러블슈팅 이력
+
+<details>
+<summary>v1.0 ~ v2.0 문제 해결 과정 보기</summary>
+
+##### [v1.0] 센서 데이터 전부 0으로 저장되는 버그
+- **증상**: SD card 파일 및 시리얼 출력에서 X/Y/Z 가속도·자이로·자기장 값이 모두 0
+- **상태**: 미해결 → 원인 분석 시작
+
+##### [v1.1] FreeRTOS + Wire 인터럽트 충돌 원인 확인
+FreeRTOS 스케줄러 시작 후 Wire(I2C) 인터럽트가 정상 동작하지 않는 것이 원인으로 확인.
+`setup()`에서 `Wire.begin()` 및 센서 초기화는 정상이나, Task 내부에서 센서 읽기 시 0이 반환됨.
+
+- **원인**: FreeRTOS 스케줄러가 TWI 인터럽트보다 높은 우선순위로 실행되어 Wire 통신 차단
+- **시도한 해결 방법**:
+  - `taskENTER_CRITICAL()` 적용 → Wire 인터럽트까지 차단되어 실패
+  - NVIC TWI 우선순위 0으로 설정 → 효과 없음
+  - `vTaskSuspendAll()` 적용 → 스케줄러만 정지, 인터럽트 허용 방식 시도했으나 실패
+  - `Wire.begin()`을 Task 내부로 이동 → 실패
+  - `task_sensor` 별도 분리 + Stack 1024 증가 → 실패
+- **상태**: 미해결
+
+##### [v1.2] SD card CS 핀(D4)이 I2C 버스 간섭 유발 확인
+I2C 스캐너로 진단한 결과, CS 핀을 D4로 설정 시 SD card 초기화 후 I2C 버스에서 센서가 전혀 인식되지 않는 현상 확인.
+
+- **진단 과정**:
+  - SD 초기화 전 I2C 스캔: `0x2C`, `0x68` 정상 인식
+  - SD 초기화 후 I2C 스캔: 아무것도 인식 안 됨
+  - → `sd.begin(D4)`가 I2C 핀에 간섭
+- **원인**: Arduino Due에서 D4가 SPI 관련 핀과 내부 충돌 발생
+- **상태**: 원인 확인 완료, 해결 진행 중
+
+##### [v1.3] CS 핀 D4 → D10 변경으로 해결 ✅
+
+- **해결 방법**:
+  ```cpp
+  // 변경 전
+  #define SD_CS_PIN 4
+
+  // 변경 후
+  #define SD_CS_PIN 10  // SPI 전용 CS 핀, I2C 간섭 없음
+  ```
+- **검증**:
+  - SD 초기화 전 I2C 스캔: `0x2C`, `0x68` ✅
+  - SD 초기화 후 I2C 스캔: `0x2C`, `0x68` ✅
+  - `[HMC] X:-21376 Y:16639 Z:-12798` ✅
+  - `[MPU Acc] X:-112 Y:236 Z:-17168` ✅
+  - `[MPU Gyro] X:172 Y:354 Z:-138` ✅
+- **상태**: 해결 완료 ✅
+
+##### [v2.0] 최종 동작 확인 ✅
+센서 데이터 정상 읽기 및 SD card 저장, UART 명령 출력까지 전체 기능 정상 동작 확인.
+
+**최종 하드웨어 구성:**
+```
+Arduino Due
+├── I2C 버스 (D20/D21)
+│   ├── HMC5883  (0x2C) → /HMC/data.txt
+│   └── MPU6050  (0x68) → /MPU/data.txt
+└── SPI 버스 (MOSI/MISO/SCK + CS=D10)
+    └── SD card
+```
+
+**FreeRTOS Task 구성:**
+```
+├── task_hmc5883 → i2cMutex → 5초 주기 읽기
+├── task_mpu6050 → i2cMutex → 5초 주기 읽기
+└── task_sd      → spiMutex → 10초 주기 저장
+                            → 'r' 명령: 파일 출력
+                            → 'c' 명령: 파일 초기화
+```
+
+**최종 출력 검증:**
+```
+SD task: saved                              ✅ 10초 주기 저장
+=== /HMC/data.txt ===
+X:-21376 Y:16639  Z:-12798                 ✅
+X:-20864 Y:26623  Z:-11262                 ✅
+=== /MPU/data.txt ===
+Acc X:-112  Y:236  Z:-17168  Gyro X:172  Y:354  Z:-138   ✅
+Acc X:-168  Y:324  Z:-17292  Gyro X:196  Y:365  Z:-120   ✅
+=== 출력 완료 ===                           ✅
+```
+
+</details>
 
 ---
 
