@@ -12,8 +12,9 @@ Arduino/
 ├── sketch_mar29a/   # 가변저항 서보 제어 (기초)
 ├── Sweep/           # 버튼 + 서보 + NeoPixel (기초)
 ├── sketch_jun14a/   # UART 서보/LED 제어 (기초)
-├── FileSystem/      # SD카드 파일 I/O (중급)
+├── FileSystem/      # SD카드 파일 I/O + FreeRTOS (중급)
 ├── I2C/             # 듀얼 센서 + FreeRTOS (고급)
+├── RTC/             # DS3231 RTC + FreeRTOS (고급)
 └── SPI/             # Flash 데이터 로깅 + FreeRTOS (고급+)
 ```
 
@@ -61,9 +62,10 @@ SdFat 라이브러리를 사용해 SD카드에 디렉토리를 생성하고 센�
 
 | 항목 | 내용 |
 |------|------|
-| 하드웨어 | SD카드 (SPI, CS Pin 10) |
-| 동작 | `/HMC`, `/MPU` 디렉토리 생성 → 파일 쓰기 → 읽기 후 시리얼 출력 |
-| 의존 라이브러리 | `SPI.h`, `SdFat.h` |
+| 하드웨어 | SD카드 (SPI, CS Pin 10), HMC5883L (0x2C), MPU6050 (0x68) |
+| 동작 | `/HMC`, `/MPU` 디렉토리 생성 → 10초 주기 저장 → `'r'` 읽기 / `'c'` 초기화 |
+| FreeRTOS Tasks | task_hmc5883 (5초), task_mpu6050 (5초), task_sd (10초 + 이벤트) |
+| 의존 라이브러리 | `FreeRTOS_ARM.h`, `Wire.h`, `SPI.h`, `SdFat.h` |
 
 #### 트러블슈팅 이력
 
@@ -153,7 +155,42 @@ Acc X:-168  Y:324  Z:-17292  Gyro X:196  Y:365  Z:-120   ✅
 
 ---
 
-### 5. `I2C` — 듀얼 센서 실시간 측정 (FreeRTOS)
+### 5. `RTC` — DS3231 실시간 시계 (FreeRTOS)
+DS3231 RTC 모듈을 I2C로 읽어 현재 시각과 온도를 주기적으로 출력하는 멀티태스킹 시스템입니다.
+RTClib 추상화 계층과 Wire 직접 제어 방식을 `#define USE_RTCLIB` 하나로 전환할 수 있습니다.
+
+#### 사용 센서
+| 센서 | I2C 주소 | 측정값 |
+|------|----------|--------|
+| DS3231 | 0x68 | 연/월/일/시/분/초, 온도 |
+
+#### 아키텍처
+- FreeRTOS Task 1 (`task_rtc`): 1초 주기 시각 읽기 및 시리얼 출력 (우선순위 2, 스택 512)
+- FreeRTOS Task 2 (`task_command`): UART 명령 처리, 이벤트 기반 (우선순위 1, 스택 512)
+- `i2cMutex`: I2C 버스 보호
+- `timeDataMutex`: 공유 시간 데이터(`g_rtcData`) 보호
+
+#### UART 명령
+| 명령 | 동작 |
+|------|------|
+| `'r'` | 현재 저장된 RTC 데이터 출력 |
+| `'s'` | 컴파일 시각으로 RTC 재설정 |
+
+#### 듀얼 모드 구현
+| 모드 | 설정 | 설명 |
+|------|------|------|
+| RTClib | `#define USE_RTCLIB 1` | RTClib 라이브러리로 추상화 사용 |
+| Wire 직접 | `#define USE_RTCLIB 0` | DS3231 레지스터 직접 제어 |
+
+Wire 직접 모드 주요 기능: BCD/DEC 변환, Zeller 공식 기반 요일 계산, OSF(Oscillator Stop Flag) 확인, 컴파일 시각(`__DATE__`/`__TIME__`) 자동 파싱 및 설정.
+
+| 통신 속도 | 115200 baud |
+|---|---|
+| 의존 라이브러리 | `FreeRTOS_ARM.h`, `Wire.h`, `RTClib.h` (USE_RTCLIB=1 시) |
+
+---
+
+### 6. `I2C` — 듀얼 센서 실시간 측정 (FreeRTOS)
 HMC5883L 지자기 센서와 MPU6050 IMU를 I2C로 동시에 읽는 멀티태스킹 시스템입니다.
 
 #### 사용 센서
@@ -182,7 +219,7 @@ HMC5883L 지자기 센서와 MPU6050 IMU를 I2C로 동시에 읽는 멀티태스
 
 ---
 
-### 6. `SPI` — Flash 메모리 데이터 로깅 (FreeRTOS)
+### 7. `SPI` — Flash 메모리 데이터 로깅 (FreeRTOS)
 I2C 듀얼 센서 데이터를 SPI Flash에 실시간 저장하고, UART 명령으로 조회·초기화하는 시스템입니다.
 
 #### 아키텍처
@@ -242,12 +279,13 @@ I2C 듀얼 센서 데이터를 SPI Flash에 실시간 저장하고, UART 명령�
 
 | 라이브러리 | 용도 | 사용 스케치 |
 |------------|------|-------------|
-| `FreeRTOS_ARM` | 실시간 멀티태스킹 | I2C, SPI |
-| `Wire` | I2C 통신 | I2C, SPI |
+| `FreeRTOS_ARM` | 실시간 멀티태스킹 | FileSystem, I2C, RTC, SPI |
+| `Wire` | I2C 통신 | FileSystem, I2C, RTC, SPI |
 | `SPI` | SPI 통신 | FileSystem, SPI |
 | `Servo` | 서보모터 제어 | Sweep, sketch_jun14a, sketch_mar29a |
 | `Adafruit_NeoPixel` | WS2812B RGB LED | Sweep, sketch_jun14a |
 | `SdFat` | SD카드 파일 시스템 | FileSystem |
+| `RTClib` | DS3231 RTC 추상화 | RTC (USE_RTCLIB=1 시) |
 
 ---
 
@@ -258,10 +296,10 @@ I2C 듀얼 센서 데이터를 SPI Flash에 실시간 저장하고, UART 명령�
 sketch_mar29a  →  Sweep  →  sketch_jun14a
      ↓
 [중급]
-FileSystem
+FileSystem (FreeRTOS + SD카드 + 듀얼 센서)
      ↓
 [고급]
-I2C (FreeRTOS + 듀얼 센서)
+I2C (FreeRTOS + 듀얼 센서)    RTC (FreeRTOS + DS3231 + 듀얼 모드)
      ↓
 [고급+]
 SPI (FreeRTOS + Flash 로깅 + 복구 로직)
