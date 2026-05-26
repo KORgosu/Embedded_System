@@ -4,7 +4,7 @@
 // RTClib 설정 vs Wire 기반 설정 변경부분
 // 아래 숫자를 1로 설정하면 RTClib 사용
 // 0으로 설정하면 Wire로 DS3231 직접 제어 수행
-#define USE_RTCLIB 1
+#define USE_RTCLIB 0
 
 #if USE_RTCLIB
   #include "RTClib.h"
@@ -106,14 +106,14 @@ bool ds3231WriteRegister(uint8_t reg, uint8_t value) {
 }
 
 bool ds3231ReadRegisters(uint8_t startReg, uint8_t *buffer, uint8_t length) {
-  Wire.beginTransmission(DS3231_ADDR);
+  Wire.beginTransmission((uint8_t)DS3231_ADDR);
   Wire.write(startReg);
 
   if (Wire.endTransmission(false) != 0) {
     return false;
   }
 
-  uint8_t received = Wire.requestFrom(DS3231_ADDR, length);
+  uint8_t received = Wire.requestFrom((uint8_t)DS3231_ADDR, (uint8_t)length);
 
   if (received != length) {
     return false;
@@ -344,12 +344,9 @@ void task_rtc(void *pvParameters) {
   }
 }
 
-// ======================================================
 // Task 2: UART 명령 처리
 // r: 현재 저장된 RTC 데이터 출력
 // s: 컴파일 시각으로 RTC 재설정
-// ======================================================
-
 void task_command(void *pvParameters) {
   Serial.println("Command task started");
   Serial.println("Command: r = read current data, s = set compile time");
@@ -393,10 +390,7 @@ void task_command(void *pvParameters) {
   }
 }
 
-// ======================================================
 // setup / loop
-// ======================================================
-
 void setup() {
   Serial.begin(115200);
 
