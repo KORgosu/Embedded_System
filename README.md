@@ -15,7 +15,8 @@ Arduino/
 ├── FileSystem/      # SD카드 파일 I/O + FreeRTOS (중급)
 ├── I2C/             # 듀얼 센서 + FreeRTOS (고급)
 ├── RTC/             # DS3231 RTC + FreeRTOS (고급)
-└── SPI/             # Flash 데이터 로깅 + FreeRTOS (고급+)
+├── SPI/             # Flash 데이터 로깅 + FreeRTOS (고급+)
+└── Camera/          # ArduCAM OV2640 촬영 + SD저장 + FreeRTOS (고급+)
 ```
 
 ---
@@ -219,6 +220,80 @@ HMC5883L 지자기 센서와 MPU6050 IMU를 I2C로 동시에 읽는 멀티태스
 
 ---
 
+### 8. `Camera` — ArduCAM Mini 2MP OV2640 카메라 촬영 + SD 저장 (FreeRTOS)
+
+ArduCAM OV2640 카메라로 JPEG 이미지를 촬영해 microSD에 저장하는 멀티태스킹 시스템입니다.
+SPI 버스를 카메라와 SD 카드가 공유하므로, Mutex로 접근을 보호합니다.
+
+#### 하드웨어 구성
+
+| 항목 | 내용 |
+|------|------|
+| 보드 | Arduino Due |
+| 카메라 | ArduCAM Mini 2MP OV2640 (SPI + I2C) |
+| 저장 장치 | microSD (SPI) |
+| CAM CS 핀 | Pin 7 |
+| SD CS 핀 | Pin 10 |
+| I2C 버스 | Wire1 (OV2640 초기 설정 전용) |
+| 해상도 | 320×240 고정 |
+| SD SPI 속도 | 4 MHz |
+| RAM 버퍼 | 16 KB (IMG_BUF_SIZE = 16384) |
+
+#### FreeRTOS 태스크 구성
+
+| 태스크 | 역할 | 우선순위 | 스택 |
+|--------|------|---------|------|
+| Command Task | Serial 명령 수신 (`s` 입력 감지) | 1 | 512 |
+| Capture Task | ArduCAM FIFO 캡처 수행 | 3 | 512 |
+| Save Task | FIFO → RAM → SD-card 저장 | 2 | 2048 |
+
+#### 동기화 객체
+
+| 객체 | 역할 |
+|------|------|
+| `xSpiMutex` | ArduCAM·SD 카드가 공유하는 SPI 버스 보호 |
+| `xSerialMutex` | 다중 태스크 Serial 출력 보호 |
+| `xCaptureQueue` | Command → Capture 태스크 촬영 요청 전달 |
+| `xSaveQueue` | Capture → Save 태스크 저장 요청 전달 |
+
+#### 저장 흐름
+
+```
+Serial 's' 입력
+    → Command Task → xCaptureQueue
+    → Capture Task: myCAM.start_capture() → FIFO에 캡처 완료
+    → xSaveQueue
+    → Save Task:
+        1단계  FIFO → RAM 버퍼  (SOI 0xFFD8 / EOI 0xFFD9 마커 검증)
+        2단계  RAM → SD-card   (file.write → file.sync → 크기 재확인)
+```
+
+#### 파일명 규칙
+
+`IMG0000.JPG` ~ `IMG9999.JPG` 순서로 자동 생성. 존재하지 않는 번호를 탐색하여 저장.
+
+#### UART 명령
+
+| 명령 | 동작 |
+|------|------|
+| `'s'` / `'S'` | 단일 촬영 후 SD-card에 JPG 저장 |
+
+#### 초기화 순서
+
+1. 핀 설정 (CAM_CS·SD_CS HIGH)
+2. `Wire1.begin()` — OV2640 I2C 레지스터 초기화
+3. `SPI.begin()`
+4. ArduCAM SPI 통신 확인 (`ARDUCHIP_TEST1` 레지스터 왕복 테스트)
+5. OV2640 VID(0x26) / PID(0x41 or 0x42) 검증
+6. JPEG 모드·320×240 해상도 설정
+7. SD-card 초기화 (`SdFat32`, 4 MHz)
+8. FreeRTOS Mutex·Queue 생성 후 스케줄러 시작
+
+| 의존 라이브러리 | `FreeRTOS_ARM.h`, `Wire.h`, `SPI.h`, `ArduCAM.h`, `SdFat.h` |
+|---|---|
+
+---
+
 ### 7. `SPI` — Flash 메모리 데이터 로깅 (FreeRTOS)
 I2C 듀얼 센서 데이터를 SPI Flash에 실시간 저장하고, UART 명령으로 조회·초기화하는 시스템입니다.
 
@@ -279,13 +354,14 @@ I2C 듀얼 센서 데이터를 SPI Flash에 실시간 저장하고, UART 명령�
 
 | 라이브러리 | 용도 | 사용 스케치 |
 |------------|------|-------------|
-| `FreeRTOS_ARM` | 실시간 멀티태스킹 | FileSystem, I2C, RTC, SPI |
-| `Wire` | I2C 통신 | FileSystem, I2C, RTC, SPI |
-| `SPI` | SPI 통신 | FileSystem, SPI |
+| `FreeRTOS_ARM` | 실시간 멀티태스킹 | FileSystem, I2C, RTC, SPI, Camera |
+| `Wire` | I2C 통신 | FileSystem, I2C, RTC, SPI, Camera |
+| `SPI` | SPI 통신 | FileSystem, SPI, Camera |
 | `Servo` | 서보모터 제어 | Sweep, sketch_jun14a, sketch_mar29a |
 | `Adafruit_NeoPixel` | WS2812B RGB LED | Sweep, sketch_jun14a |
-| `SdFat` | SD카드 파일 시스템 | FileSystem |
+| `SdFat` | SD카드 파일 시스템 | FileSystem, Camera |
 | `RTClib` | DS3231 RTC 추상화 | RTC (USE_RTCLIB=1 시) |
+| `ArduCAM` | OV2640 카메라 드라이버 | Camera |
 
 ---
 
@@ -303,6 +379,8 @@ I2C (FreeRTOS + 듀얼 센서)    RTC (FreeRTOS + DS3231 + 듀얼 모드)
      ↓
 [고급+]
 SPI (FreeRTOS + Flash 로깅 + 복구 로직)
+     ↓
+Camera (FreeRTOS + ArduCAM OV2640 + SPI Mutex + JPEG 검증)
 ```
 
 ---
